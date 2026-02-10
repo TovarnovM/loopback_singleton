@@ -109,8 +109,31 @@ def recv_message_timeout(
 
 
 def _peer_disconnected(sock: socket.socket) -> bool:
-    if not _HAS_POLL:
+    if _HAS_POLL:
+        poller = select.poll()
+        poller.register(sock, _POLL_HUP_FLAGS)
+        return any(event & _POLL_HUP_FLAGS for _, event in poller.poll(0))
+
+    # Windows and other platforms may not expose poll/POLLHUP.
+    # Fall back to a non-blocking MSG_PEEK probe so closed peers are still
+    # detected when only a partial frame is buffered.
+    if not hasattr(sock, "recv"):
         return False
-    poller = select.poll()
-    poller.register(sock, _POLL_HUP_FLAGS)
-    return any(event & _POLL_HUP_FLAGS for _, event in poller.poll(0))
+
+    original_timeout = None
+    if hasattr(sock, "gettimeout"):
+        original_timeout = sock.gettimeout()
+
+    try:
+        if hasattr(sock, "setblocking"):
+            sock.setblocking(False)
+        try:
+            chunk = sock.recv(1, socket.MSG_PEEK)
+        except (BlockingIOError, InterruptedError):
+            return False
+        except OSError:
+            return True
+        return chunk == b""
+    finally:
+        if original_timeout is not None and hasattr(sock, "settimeout"):
+            sock.settimeout(original_timeout)
