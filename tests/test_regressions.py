@@ -8,6 +8,7 @@ import sys
 import time
 import uuid
 import stat
+import importlib
 
 import pytest
 from pathlib import Path
@@ -262,6 +263,49 @@ def test_ensure_auth_token_uses_fallback_when_xdg_runtime_unusable(monkeypatch, 
         assert paths.auth_file.exists()
     finally:
         blocked.chmod(0o700)
+
+
+def test_transport_imports_without_poll_support(monkeypatch) -> None:
+    import loopback_singleton.transport as transport
+
+    monkeypatch.delattr(transport.select, "poll", raising=False)
+    monkeypatch.delattr(transport.select, "POLLHUP", raising=False)
+    monkeypatch.delattr(transport.select, "POLLERR", raising=False)
+
+    reloaded = importlib.reload(transport)
+    assert reloaded._HAS_POLL is False
+    assert reloaded._peer_disconnected(object()) is False
+
+    importlib.reload(transport)
+
+
+def test_recv_message_timeout_sleeps_when_partial_frame_buffered(monkeypatch) -> None:
+    import loopback_singleton.transport as transport
+
+    class _Sock:
+        def recv(self, _n: int, _flags: int = 0) -> bytes:
+            return b"\x00\x01"
+
+
+    sock = _Sock()
+    serializer = get_serializer("pickle")
+    sleep_calls: list[float] = []
+
+    def fake_select(_r, _w, _x, _timeout):
+        return ([sock], [], [])
+
+    def fake_sleep(seconds: float) -> None:
+        sleep_calls.append(seconds)
+        raise RuntimeError("stop")
+
+    monkeypatch.setattr(transport.select, "select", fake_select)
+    monkeypatch.setattr(transport.time, "sleep", fake_sleep)
+    monkeypatch.setattr(transport, "_peer_disconnected", lambda _sock: False)
+
+    with pytest.raises(RuntimeError, match="stop"):
+        transport.recv_message_timeout(sock, serializer, timeout=0.1)
+
+    assert sleep_calls
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX-only metadata corruption regression")
 def test_corrupt_runtime_metadata_is_treated_as_missing_and_recovers(monkeypatch, tmp_path: Path) -> None:

@@ -14,9 +14,15 @@ from .serialization import PickleSerializer
 _LEN_STRUCT = struct.Struct("!I")
 MAX_FRAME_BYTES = 16 * 1024 * 1024
 
-_POLL_HUP_FLAGS = select.POLLHUP | select.POLLERR
-if hasattr(select, "POLLRDHUP"):
-    _POLL_HUP_FLAGS |= select.POLLRDHUP
+_HAS_POLL = hasattr(select, "poll") and hasattr(select, "POLLHUP") and hasattr(select, "POLLERR")
+if _HAS_POLL:
+    _POLL_HUP_FLAGS = select.POLLHUP | select.POLLERR
+    if hasattr(select, "POLLRDHUP"):
+        _POLL_HUP_FLAGS |= select.POLLRDHUP
+else:
+    _POLL_HUP_FLAGS = 0
+
+_PARTIAL_FRAME_WAIT_INTERVAL = 0.01
 
 
 def _recv_exact(sock: socket.socket, n: int) -> bytes:
@@ -75,6 +81,7 @@ def recv_message_timeout(
         if len(raw_len) < _LEN_STRUCT.size:
             if _peer_disconnected(sock):
                 raise ConnectionError("Socket closed while receiving")
+            time.sleep(min(_PARTIAL_FRAME_WAIT_INTERVAL, remaining))
             continue
 
         (payload_len,) = _LEN_STRUCT.unpack(raw_len)
@@ -95,12 +102,15 @@ def recv_message_timeout(
         if len(frame) < frame_len:
             if _peer_disconnected(sock):
                 raise ConnectionError("Socket closed while receiving")
+            time.sleep(min(_PARTIAL_FRAME_WAIT_INTERVAL, remaining))
             continue
 
         return recv_message(sock, serializer)
 
 
 def _peer_disconnected(sock: socket.socket) -> bool:
+    if not _HAS_POLL:
+        return False
     poller = select.poll()
     poller.register(sock, _POLL_HUP_FLAGS)
     return any(event & _POLL_HUP_FLAGS for _, event in poller.poll(0))
