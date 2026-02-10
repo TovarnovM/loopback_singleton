@@ -68,7 +68,10 @@ def recv_message_timeout(
         if remaining <= 0:
             return None
 
-        readable, _, _ = select.select([sock], [], [], remaining)
+        try:
+            readable, _, _ = select.select([sock], [], [], remaining)
+        except OSError as exc:
+            raise ConnectionError("Socket closed while receiving") from exc
         if not readable:
             return None
 
@@ -110,9 +113,12 @@ def recv_message_timeout(
 
 def _peer_disconnected(sock: socket.socket) -> bool:
     if _HAS_POLL:
-        poller = select.poll()
-        poller.register(sock, _POLL_HUP_FLAGS)
-        return any(event & _POLL_HUP_FLAGS for _, event in poller.poll(0))
+        try:
+            poller = select.poll()
+            poller.register(sock, _POLL_HUP_FLAGS)
+            return any(event & _POLL_HUP_FLAGS for _, event in poller.poll(0))
+        except OSError:
+            return True
 
     # Windows and other platforms may not expose poll/POLLHUP.
     # Fall back to a non-blocking MSG_PEEK probe so closed peers are still
@@ -136,4 +142,7 @@ def _peer_disconnected(sock: socket.socket) -> bool:
         return chunk == b""
     finally:
         if original_timeout is not None and hasattr(sock, "settimeout"):
-            sock.settimeout(original_timeout)
+            try:
+                sock.settimeout(original_timeout)
+            except OSError:
+                pass

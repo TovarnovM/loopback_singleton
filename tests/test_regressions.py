@@ -307,6 +307,23 @@ def test_recv_message_timeout_sleeps_when_partial_frame_buffered(monkeypatch) ->
 
     assert sleep_calls
 
+
+def test_recv_message_timeout_treats_select_oserror_as_disconnect(monkeypatch) -> None:
+    import loopback_singleton.transport as transport
+
+    class _Sock:
+        pass
+
+    serializer = get_serializer("pickle")
+
+    def fake_select(_r, _w, _x, _timeout):
+        raise OSError("bad file descriptor")
+
+    monkeypatch.setattr(transport.select, "select", fake_select)
+
+    with pytest.raises(ConnectionError, match="Socket closed while receiving"):
+        transport.recv_message_timeout(_Sock(), serializer, timeout=0.1)
+
 @pytest.mark.skipif(os.name == "nt", reason="POSIX-only metadata corruption regression")
 def test_corrupt_runtime_metadata_is_treated_as_missing_and_recovers(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
