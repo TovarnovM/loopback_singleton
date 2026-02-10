@@ -11,7 +11,7 @@ Current release: `0.1.1`.
 ### What works today
 
 - Local singleton daemon auto-start on first use.
-- Safe-ish concurrent startup with file locking to reduce duplicate daemons.
+- Concurrent startup coordination with file locking to reduce duplicate daemons.
 - Authenticated handshake (shared token in runtime dir) between client and daemon.
 - Sequential method execution on the singleton object (single executor queue).
 - Idle TTL auto-shutdown for daemon cleanup.
@@ -65,7 +65,7 @@ with svc.proxy() as obj:
     print(obj.inc())
 ```
 
-### API overview
+## API overview
 
 ```python
 local_singleton(
@@ -105,10 +105,9 @@ svc.shutdown()
 4. Daemon binds ephemeral loopback TCP port, writes runtime metadata, and serves requests.
 5. Each `CALL` request is executed sequentially against one in-memory object instance.
 
+## Lifecycle and robustness scenarios
 
-### Lifecycle and robustness scenarios
-
-#### Scenario A — Oversized payload fails fast, daemon remains healthy
+### Scenario A — Oversized payload fails fast, daemon remains healthy
 
 ```python
 svc = local_singleton("svc", factory="mypkg.m:MyObj")
@@ -118,11 +117,11 @@ with svc.proxy() as p:
 
 Large frames are capped (16 MiB by default). Oversized frames are rejected with a clear protocol/connection error, and the daemon keeps serving other clients.
 
-#### Scenario B — Idle shutdown survives stuck clients
+### Scenario B — Idle shutdown survives stuck clients
 
 Daemon client handlers use bounded socket read timeouts, so an idle/stuck TCP client cannot block daemon shutdown forever.
 
-#### Scenario C — Private methods are denied by daemon
+### Scenario C — Private methods are denied by daemon
 
 ```python
 svc = local_singleton("svc", factory="mypkg.m:MyObj")
@@ -132,7 +131,7 @@ with svc.proxy() as p:
 
 Even if a client bypasses proxy-side checks, daemon-side policy rejects `CALL` for methods starting with `_`.
 
-#### Scenario D — Warm-up without creating a proxy
+### Scenario D — Warm-up without creating a proxy
 
 ```python
 svc = local_singleton("svc", factory="mypkg.m:MyObj")
@@ -141,7 +140,7 @@ svc.ensure_started()
 
 This starts (or verifies) the daemon and completes handshake without creating a `Proxy`.
 
-#### Scenario E — Health check and deterministic shutdown
+### Scenario E — Health check and deterministic shutdown
 
 ```python
 svc = local_singleton("svc", factory="mypkg.m:MyObj")
@@ -189,9 +188,10 @@ If startup repeatedly fails due to stale metadata, stop clients and remove the d
 
 ## Development
 
-Run tests:
+Run checks and tests:
 
 ```bash
+ruff check .
 pytest -q
 ```
 
