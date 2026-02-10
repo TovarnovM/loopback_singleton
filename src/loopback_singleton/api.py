@@ -6,13 +6,20 @@ import socket
 import subprocess
 import sys
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
-from .errors import ConnectionFailedError, DaemonConnectionError, HandshakeError
+from .errors import ConnectionFailedError, DaemonConnectionError, FactoryMismatchError, HandshakeError
+from .factory import compute_factory_id, normalize_factory
 from .locking import FileLock
 from .proxy import Proxy
-from .runtime import ensure_auth_token, get_runtime_paths, read_runtime, remove_runtime
+from .runtime import (
+    ensure_auth_token,
+    get_runtime_paths,
+    read_runtime,
+    remove_runtime,
+    write_factory_payload,
+)
 from .serialization import get_serializer
 from .transport import recv_message, send_message
 from .version import PROTOCOL_VERSION
@@ -27,6 +34,12 @@ class LocalSingletonService:
     scope: str = "user"
     connect_timeout: float = 0.5
     start_timeout: float = 3.0
+    factory_args: tuple[Any, ...] = field(default_factory=tuple)
+    factory_kwargs: dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def factory_id(self) -> str:
+        return compute_factory_id(self.factory, self.factory_args, self.factory_kwargs)
 
     def _connect_once(self) -> socket.socket:
         paths = get_runtime_paths(name=self.name, scope=self.scope)
@@ -47,20 +60,39 @@ class LocalSingletonService:
             resp = recv_message(sock, serializer)
             if resp[0] != "OK":
                 raise HandshakeError(str(resp))
+            self._assert_runtime_factory_match(runtime)
             return sock
         except Exception:
             sock.close()
             raise
 
+    def _assert_runtime_factory_match(self, runtime: dict[str, Any]) -> None:
+        running_factory_id = runtime.get("factory_id")
+        if running_factory_id is None:
+            return
+        if running_factory_id != self.factory_id:
+            raise FactoryMismatchError(
+                "Factory configuration mismatch for running daemon. "
+                "Start a new service name or use matching factory/factory_args/factory_kwargs."
+            )
+
     def _spawn_daemon(self) -> None:
+        paths = get_runtime_paths(name=self.name, scope=self.scope)
+        payload = {
+            "protocol_version": PROTOCOL_VERSION,
+            "factory_import": self.factory,
+            "factory_args": self.factory_args,
+            "factory_kwargs": self.factory_kwargs,
+        }
+        write_factory_payload(paths, payload)
         args = [
             sys.executable,
             "-m",
             "loopback_singleton.daemon",
             "--name",
             self.name,
-            "--factory",
-            self.factory,
+            "--factory-file",
+            str(paths.factory_file),
             "--idle-ttl",
             str(self.idle_ttl),
             "--serializer",
@@ -85,12 +117,16 @@ class LocalSingletonService:
         ensure_auth_token(paths)
         try:
             return self._connect_once()
+        except FactoryMismatchError:
+            raise
         except Exception:
             pass
 
         with FileLock(paths.lock_file):
             try:
                 return self._connect_once()
+            except FactoryMismatchError:
+                raise
             except Exception:
                 pass
             remove_runtime(paths)
@@ -152,20 +188,24 @@ class LocalSingletonService:
 
 def local_singleton(
     name: str,
-    factory: str,
+    factory: str | Any,
     *,
+    factory_args: tuple[Any, ...] = (),
+    factory_kwargs: dict[str, Any] | None = None,
     scope: str = "user",
     idle_ttl: float = 2.0,
     serializer: str = "pickle",
     connect_timeout: float = 0.5,
     start_timeout: float = 3.0,
 ) -> LocalSingletonService:
-    if not isinstance(factory, str):
-        raise TypeError("MVP requires factory as import string: 'module:callable_or_class'")
+    normalized_factory = normalize_factory(factory)
+    normalized_kwargs = {} if factory_kwargs is None else dict(factory_kwargs)
     get_serializer(serializer)
     return LocalSingletonService(
         name=name,
-        factory=factory,
+        factory=normalized_factory,
+        factory_args=tuple(factory_args),
+        factory_kwargs=normalized_kwargs,
         idle_ttl=idle_ttl,
         serializer=serializer,
         scope=scope,

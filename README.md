@@ -4,9 +4,9 @@
 
 It is useful when you want one process-external object (cache, counter, coordinator, adapter, etc.) and you want all local workers to call into that object without standing up a full RPC system.
 
-## Current status (v0.1.1)
+## Current status (v0.2.2)
 
-Current release: `0.1.1`.
+Current release: `0.2.2`.
 
 ### What works today
 
@@ -70,8 +70,10 @@ with svc.proxy() as obj:
 ```python
 local_singleton(
     name: str,
-    factory: str,
+    factory: str | callable | type,
     *,
+    factory_args: tuple = (),
+    factory_kwargs: dict | None = None,
     scope: str = "user",
     idle_ttl: float = 2.0,
     serializer: str = "pickle",
@@ -81,7 +83,8 @@ local_singleton(
 ```
 
 - `name`: singleton identity (shared runtime namespace).
-- `factory`: import string in form `"module:callable_or_class"`.
+- `factory`: import string (`"module:callable_or_class"`) or module-level importable callable/class object.
+- `factory_args`, `factory_kwargs`: constructor args used when creating singleton instance (`factory_kwargs=None` behaves as `{}`).
 - `scope`: currently only `"user"` is implemented.
 - `idle_ttl`: daemon stops after this many seconds with zero active connections.
 - `serializer`: currently only `"pickle"` is implemented.
@@ -107,48 +110,60 @@ svc.shutdown()
 
 ## Lifecycle and robustness scenarios
 
-### Scenario A — Oversized payload fails fast, daemon remains healthy
+### Scenario 1 — Pass a class directly
 
 ```python
-svc = local_singleton("svc", factory="mypkg.m:MyObj")
+from loopback_singleton import local_singleton
+from mypkg.services import CounterService
+
+svc = local_singleton(
+    "counter",
+    factory=CounterService,
+    factory_args=(10,),
+    factory_kwargs={"step": 2},
+)
+
 with svc.proxy() as p:
-    p.process_bytes(b"x" * (100 * 1024 * 1024))  # 100MB
+    assert p.inc() == 12
+    assert p.inc() == 14
 ```
 
-Large frames are capped (16 MiB by default). Oversized frames are rejected with a clear protocol/connection error, and the daemon keeps serving other clients.
-
-### Scenario B — Idle shutdown survives stuck clients
-
-Daemon client handlers use bounded socket read timeouts, so an idle/stuck TCP client cannot block daemon shutdown forever.
-
-### Scenario C — Private methods are denied by daemon
+### Scenario 2 — Pass a factory function directly
 
 ```python
-svc = local_singleton("svc", factory="mypkg.m:MyObj")
-with svc.proxy() as p:
-    p._reset_state()
+from loopback_singleton import local_singleton
+from mypkg.factories import make_cache
+
+svc = local_singleton(
+    "cache",
+    factory=make_cache,
+    factory_kwargs={"max_items": 1000, "ttl": 60},
+)
+
+with svc.proxy() as cache:
+    cache.put("k", "v")
+    assert cache.get("k") == "v"
 ```
 
-Even if a client bypasses proxy-side checks, daemon-side policy rejects `CALL` for methods starting with `_`.
-
-### Scenario D — Warm-up without creating a proxy
+### Scenario 3 — Warm-up a configured daemon without proxy creation
 
 ```python
-svc = local_singleton("svc", factory="mypkg.m:MyObj")
+svc = local_singleton("svc", factory=MyService, factory_args=(...), factory_kwargs={...})
 svc.ensure_started()
+info = svc.ping()
 ```
 
-This starts (or verifies) the daemon and completes handshake without creating a `Proxy`.
-
-### Scenario E — Health check and deterministic shutdown
+### Scenario 4 — Non-importable factory gets a clear error
 
 ```python
-svc = local_singleton("svc", factory="mypkg.m:MyObj")
-info = svc.ping()
-svc.shutdown()
+svc = local_singleton("x", factory=lambda: object())
+# -> TypeError: Factory must be importable (module-level). Pass 'pkg.mod:callable' string instead.
 ```
 
-`ping()` returns daemon metadata (`pid`, `active`, and protocol/runtime info). `shutdown()` requests daemon exit and cleans runtime metadata.
+### Factory consistency across concurrent clients
+
+For a given singleton `name`, the first daemon start wins. Subsequent clients must use the same normalized factory + args/kwargs. If they differ, the client fails fast with `FactoryMismatchError`.
+
 
 ## Error model
 
@@ -159,6 +174,7 @@ Main exception classes exported by the package:
   - `ConnectionFailedError`
   - `HandshakeError`
 - `ProtocolError` (invalid or oversized transport frames/messages)
+- `FactoryMismatchError` (running daemon factory config differs from requested config)
 - `RemoteError` (remote traceback payload)
 
 ## Security notes (important)
@@ -179,7 +195,7 @@ If startup repeatedly fails due to stale metadata, stop clients and remove the d
 
 ## Known limitations (MVP)
 
-- Factory must be an import string (`"module:callable_or_class"`).
+- Callable/class factories must be importable at module level when passed as objects (lambdas/nested functions are rejected).
 - No identity transparency for proxies (`isinstance(proxy, MyType)` is not preserved).
 - No magic-method forwarding (`__len__`, operators, iteration, etc.).
 - Only `scope="user"` implemented.

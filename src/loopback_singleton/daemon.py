@@ -10,13 +10,15 @@ import socket
 import threading
 import time
 import traceback
+from pathlib import Path
 from dataclasses import dataclass
 from typing import Any
 
 from .errors import ProtocolError
-from .runtime import get_runtime_paths, remove_runtime, write_runtime
+from .factory import compute_factory_id
+from .runtime import get_runtime_paths, read_factory_payload_file, remove_runtime, write_runtime
 from .serialization import get_serializer
-from .transport import recv_message, recv_message_timeout, send_message
+from .transport import recv_message_timeout, send_message
 from .version import PROTOCOL_VERSION
 
 
@@ -35,23 +37,42 @@ MAX_STALLED_PARTIAL_WINDOWS = 3
 def _resolve_factory(factory_import: str):
     if ":" not in factory_import:
         raise ValueError("Factory must be import string 'module:callable_or_class'")
-    module_name, attr = factory_import.split(":", 1)
+    module_name, attr_path = factory_import.split(":", 1)
     module = importlib.import_module(module_name)
-    target = getattr(module, attr)
+    target: Any = module
+    for attr in attr_path.split("."):
+        target = getattr(target, attr)
     return target
 
 
-def _build_instance(factory_import: str) -> Any:
+def _build_instance(factory_import: str, factory_args: tuple[Any, ...] = (), factory_kwargs: dict[str, Any] | None = None) -> Any:
     target = _resolve_factory(factory_import)
-    return target()
+    kwargs = {} if factory_kwargs is None else factory_kwargs
+    return target(*factory_args, **kwargs)
 
 
-def run_daemon(name: str, factory: str, idle_ttl: float, serializer_name: str, scope: str) -> None:
+def _load_factory_startup(factory_file: str) -> tuple[str, tuple[Any, ...], dict[str, Any], str]:
+    payload = read_factory_payload_file(Path(factory_file))
+    factory_import = payload.get("factory_import")
+    if not isinstance(factory_import, str):
+        raise ValueError("factory_import must be present in factory payload")
+    factory_args = payload.get("factory_args", ())
+    factory_kwargs = payload.get("factory_kwargs", {})
+    if not isinstance(factory_args, tuple):
+        raise ValueError("factory_args must be a tuple")
+    if not isinstance(factory_kwargs, dict):
+        raise ValueError("factory_kwargs must be a dict")
+    factory_id = compute_factory_id(factory_import, factory_args, factory_kwargs)
+    return factory_import, factory_args, factory_kwargs, factory_id
+
+
+def run_daemon(name: str, factory_file: str, idle_ttl: float, serializer_name: str, scope: str) -> None:
     serializer = get_serializer(serializer_name)
     paths = get_runtime_paths(name=name, scope=scope)
     auth_token = paths.auth_file.read_bytes().decode("utf-8").strip()
 
-    obj = _build_instance(factory)
+    factory_import, factory_args, factory_kwargs, factory_id = _load_factory_startup(factory_file)
+    obj = _build_instance(factory_import, factory_args=factory_args, factory_kwargs=factory_kwargs)
 
     server_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     server_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -67,6 +88,7 @@ def run_daemon(name: str, factory: str, idle_ttl: float, serializer_name: str, s
         "pid": __import__("os").getpid(),
         "serializer": serializer_name,
         "started_at": time.time(),
+        "factory_id": factory_id,
     }
     write_runtime(paths, runtime_info)
 
@@ -172,6 +194,7 @@ def run_daemon(name: str, factory: str, idle_ttl: float, serializer_name: str, s
                                 "started_at": runtime_info["started_at"],
                                 "serializer": serializer_name,
                                 "protocol_version": PROTOCOL_VERSION,
+                                "factory_id": factory_id,
                             },
                         ),
                         serializer,
@@ -226,14 +249,14 @@ def run_daemon(name: str, factory: str, idle_ttl: float, serializer_name: str, s
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--name", required=True)
-    parser.add_argument("--factory", required=True)
+    parser.add_argument("--factory-file", required=True)
     parser.add_argument("--idle-ttl", required=True, type=float)
     parser.add_argument("--serializer", default="pickle")
     parser.add_argument("--scope", default="user")
     args = parser.parse_args()
     run_daemon(
         name=args.name,
-        factory=args.factory,
+        factory_file=args.factory_file,
         idle_ttl=args.idle_ttl,
         serializer_name=args.serializer,
         scope=args.scope,

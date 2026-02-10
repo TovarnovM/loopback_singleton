@@ -2,6 +2,7 @@ from .api import LocalSingletonService, local_singleton
 from .errors import (
     ConnectionFailedError,
     DaemonConnectionError,
+    FactoryMismatchError,
     HandshakeError,
     LoopbackSingletonError,
     ProtocolError,
@@ -15,6 +16,7 @@ __all__ = [
     "ProtocolError",
     "DaemonConnectionError",
     "ConnectionFailedError",
+    "FactoryMismatchError",
     "HandshakeError",
     "RemoteError",
 ]

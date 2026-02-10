@@ -7,8 +7,13 @@ import pytest
 from loopback_singleton.api import local_singleton
 
 
-def test_local_singleton_requires_factory_import_string() -> None:
-    with pytest.raises(TypeError, match="MVP requires factory as import string"):
+def test_local_singleton_allows_callable_factory() -> None:
+    svc = local_singleton(name=uuid4().hex, factory=dict)
+    assert svc.factory == "builtins:dict"
+
+
+def test_local_singleton_rejects_non_importable_callable() -> None:
+    with pytest.raises(TypeError, match="Factory must be importable"):
         local_singleton(name=uuid4().hex, factory=lambda: object())
 
 

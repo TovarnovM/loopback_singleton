@@ -28,6 +28,7 @@ class RuntimePaths:
     runtime_file: Path
     auth_file: Path
     lock_file: Path
+    factory_file: Path
 
 
 def get_runtime_dir(name: str, scope: str = "user") -> Path:
@@ -58,6 +59,7 @@ def get_runtime_paths(name: str, scope: str = "user") -> RuntimePaths:
         runtime_file=base / "runtime.bin",
         auth_file=base / "auth.bin",
         lock_file=base / "lockfile.lock",
+        factory_file=base / "factory.bin",
     )
 
 
@@ -108,8 +110,40 @@ def write_runtime(paths: RuntimePaths, runtime_info: dict[str, Any]) -> None:
 
 
 def remove_runtime(paths: RuntimePaths) -> None:
-    for path in (paths.runtime_file, paths.runtime_file.with_suffix(".tmp")):
+    for path in (
+        paths.runtime_file,
+        paths.runtime_file.with_suffix(".tmp"),
+        paths.factory_file,
+        paths.factory_file.with_suffix(".tmp"),
+    ):
         try:
             path.unlink()
         except FileNotFoundError:
             pass
+
+
+def write_factory_payload(paths: RuntimePaths, payload: dict[str, Any]) -> None:
+    paths.base_dir.mkdir(parents=True, exist_ok=True)
+    _chmod_owner_rw(paths.base_dir)
+    tmp = paths.factory_file.with_suffix(".tmp")
+    with tmp.open("wb") as f:
+        pickle.dump(payload, f, protocol=pickle.HIGHEST_PROTOCOL)
+    _chmod_owner_rw(tmp)
+    os.replace(tmp, paths.factory_file)
+    _chmod_owner_rw(paths.factory_file)
+
+
+def read_factory_payload(paths: RuntimePaths) -> dict[str, Any]:
+    with paths.factory_file.open("rb") as f:
+        payload = pickle.load(f)
+    if not isinstance(payload, dict):
+        raise ValueError("Factory payload must be a dictionary")
+    return payload
+
+
+def read_factory_payload_file(factory_file: Path) -> dict[str, Any]:
+    with factory_file.open("rb") as f:
+        payload = pickle.load(f)
+    if not isinstance(payload, dict):
+        raise ValueError("Factory payload must be a dictionary")
+    return payload
