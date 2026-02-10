@@ -4,9 +4,9 @@
 
 It is useful when you want one process-external object (cache, counter, coordinator, adapter, etc.) and you want all local workers to call into that object without standing up a full RPC system.
 
-## Current status (v0.0.1)
+## Current status (v0.1.1)
 
-This is an MVP release (`0.0.1`) focused on reliability of startup/connect behavior and process coordination.
+Current release: `0.1.1`.
 
 ### What works today
 
