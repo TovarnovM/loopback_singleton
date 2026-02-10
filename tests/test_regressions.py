@@ -7,15 +7,19 @@ import subprocess
 import sys
 import time
 import uuid
+import stat
+
+import pytest
 from pathlib import Path
 
+from loopback_singleton import local_singleton
 from loopback_singleton.api import LocalSingletonService
 from loopback_singleton.errors import (
     ConnectionFailedError,
     DaemonConnectionError,
     HandshakeError,
 )
-from loopback_singleton.runtime import ensure_auth_token, get_runtime_paths, remove_runtime
+from loopback_singleton.runtime import ensure_auth_token, get_runtime_paths, read_runtime, remove_runtime
 from loopback_singleton.serialization import get_serializer
 from loopback_singleton.transport import recv_message, send_message
 from loopback_singleton.version import PROTOCOL_VERSION
@@ -103,3 +107,91 @@ def test_daemon_startup_grace_before_first_connection() -> None:
         proc.terminate()
         proc.wait(timeout=5)
         remove_runtime(paths)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX-only permission behavior")
+def test_auth_token_runtime_dir_is_traversable(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
+    name = f"auth-perm-{uuid.uuid4().hex}"
+    paths = get_runtime_paths(name)
+
+    ensure_auth_token(paths)
+
+    assert paths.base_dir.exists()
+    assert paths.auth_file.stat().st_size > 0
+    mode = stat.S_IMODE(os.stat(paths.base_dir).st_mode)
+    assert mode & 0o111 != 0
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX-only runtime fallback behavior")
+def test_get_runtime_dir_falls_back_when_xdg_runtime_unusable(monkeypatch, tmp_path: Path) -> None:
+    blocked = tmp_path / "blocked"
+    blocked.mkdir()
+    try:
+        blocked.chmod(0o000)
+    except OSError:
+        pytest.skip("chmod not supported in this environment")
+
+    if os.access(blocked, os.W_OK | os.X_OK):
+        pytest.skip("Cannot simulate blocked XDG_RUNTIME_DIR for this user")
+
+    try:
+        monkeypatch.setenv("XDG_RUNTIME_DIR", str(blocked))
+        name = f"fallback-{uuid.uuid4().hex}"
+        runtime_dir = get_runtime_paths(name).base_dir
+
+        assert runtime_dir.parent.parent == Path.home() / ".cache"
+        assert blocked not in runtime_dir.parents
+    finally:
+        blocked.chmod(0o700)
+
+
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX-only runtime fallback behavior")
+def test_ensure_auth_token_uses_fallback_when_xdg_runtime_unusable(monkeypatch, tmp_path: Path) -> None:
+    blocked = tmp_path / "blocked-auth"
+    blocked.mkdir()
+    try:
+        blocked.chmod(0o000)
+    except OSError:
+        pytest.skip("chmod not supported in this environment")
+
+    if os.access(blocked, os.W_OK | os.X_OK):
+        pytest.skip("Cannot simulate blocked XDG_RUNTIME_DIR for this user")
+
+    try:
+        monkeypatch.setenv("XDG_RUNTIME_DIR", str(blocked))
+        name = f"fallback-auth-{uuid.uuid4().hex}"
+        paths = get_runtime_paths(name)
+
+        token = ensure_auth_token(paths)
+
+        assert token
+        assert paths.base_dir.parent.parent == Path.home() / ".cache"
+        assert paths.auth_file.exists()
+    finally:
+        blocked.chmod(0o700)
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX-only metadata corruption regression")
+def test_corrupt_runtime_metadata_is_treated_as_missing_and_recovers(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
+    name = f"corrupt-runtime-{uuid.uuid4().hex}"
+    paths = get_runtime_paths(name)
+    paths.base_dir.mkdir(parents=True, exist_ok=True)
+    paths.runtime_file.write_bytes(b"this-is-not-pickle")
+
+    assert read_runtime(paths) is None
+
+    test_path = str(Path(__file__).parent)
+    src_path = str(Path(__file__).parent.parent / "src")
+    monkeypatch.setenv(
+        "PYTHONPATH",
+        os.pathsep.join([src_path, test_path, os.environ.get("PYTHONPATH", "")]).strip(os.pathsep),
+    )
+
+    svc = local_singleton(name=name, factory=FACTORY, idle_ttl=1.0)
+    with svc.proxy() as p:
+        assert p.ping() == "pong"
+
+    remove_runtime(paths)

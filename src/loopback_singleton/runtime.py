@@ -16,7 +16,8 @@ def _chmod_owner_rw(path: Path) -> None:
     if os.name == "nt":
         return
     try:
-        os.chmod(path, 0o600)
+        mode = 0o700 if path.is_dir() else 0o600
+        os.chmod(path, mode)
     except OSError:
         pass
 
@@ -36,7 +37,17 @@ def get_runtime_dir(name: str, scope: str = "user") -> Path:
         root = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local"))
     else:
         xdg_runtime_dir = os.environ.get("XDG_RUNTIME_DIR")
-        root = Path(xdg_runtime_dir) if xdg_runtime_dir else Path.home() / ".cache"
+        root = Path.home() / ".cache"
+        if xdg_runtime_dir:
+            candidate_root = Path(xdg_runtime_dir)
+            probe = candidate_root / RUNTIME_SUBDIR
+            try:
+                probe.mkdir(parents=True, exist_ok=True)
+                if not os.access(probe, os.W_OK | os.X_OK):
+                    raise PermissionError("Runtime directory is not writable/traversable")
+                root = candidate_root
+            except OSError:
+                root = Path.home() / ".cache"
     return root / RUNTIME_SUBDIR / name
 
 
@@ -53,9 +64,12 @@ def get_runtime_paths(name: str, scope: str = "user") -> RuntimePaths:
 def ensure_auth_token(paths: RuntimePaths) -> str:
     paths.base_dir.mkdir(parents=True, exist_ok=True)
     _chmod_owner_rw(paths.base_dir)
-    if paths.auth_file.exists():
-        _chmod_owner_rw(paths.auth_file)
-        return paths.auth_file.read_bytes().decode("utf-8")
+    try:
+        if paths.auth_file.exists():
+            _chmod_owner_rw(paths.auth_file)
+            return paths.auth_file.read_bytes().decode("utf-8")
+    except PermissionError:
+        pass
 
     token = secrets.token_hex(32)
     try:
@@ -70,10 +84,16 @@ def ensure_auth_token(paths: RuntimePaths) -> str:
 
 
 def read_runtime(paths: RuntimePaths) -> dict[str, Any] | None:
-    if not paths.runtime_file.exists():
+    try:
+        if not paths.runtime_file.exists():
+            return None
+    except PermissionError:
         return None
-    with paths.runtime_file.open("rb") as f:
-        return pickle.load(f)
+    try:
+        with paths.runtime_file.open("rb") as f:
+            return pickle.load(f)
+    except (PermissionError, pickle.UnpicklingError, EOFError, OSError):
+        return None
 
 
 def write_runtime(paths: RuntimePaths, runtime_info: dict[str, Any]) -> None:
