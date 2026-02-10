@@ -12,7 +12,7 @@ import pytest
 from multiprocessing import get_context
 from pathlib import Path
 
-from loopback_singleton import RemoteError, local_singleton
+from loopback_singleton import FactoryMismatchError, RemoteError, local_singleton
 from loopback_singleton.runtime import ensure_auth_token, get_runtime_paths, remove_runtime
 from loopback_singleton.serialization import get_serializer
 from loopback_singleton.transport import MAX_FRAME_BYTES, recv_message, send_message
@@ -26,6 +26,8 @@ if str(TESTS_DIR) not in sys.path:
     sys.path.insert(0, str(TESTS_DIR))
 
 FACTORY = "fixtures_pkg.services:TestCounter"
+
+from fixtures_pkg.services import TestCounter, make_counter  # noqa: E402
 
 
 def _worker_ping(name: str, queue) -> None:
@@ -322,5 +324,41 @@ def test_chunked_ping_frame_survives_recv_timeout_window() -> None:
         status, payload = recv_message(sock, serializer)
         assert status == "OK"
         assert payload["pid"] == runtime["pid"]
+
+    remove_runtime(get_runtime_paths(name))
+
+
+def test_factory_class_object_with_args_kwargs() -> None:
+    name = f"class-factory-{uuid.uuid4().hex}"
+    svc = local_singleton(name=name, factory=TestCounter, factory_args=(10,), factory_kwargs={"step": 2}, idle_ttl=1.0)
+
+    with svc.proxy() as p:
+        assert p.inc() == 12
+        assert p.inc() == 14
+
+    remove_runtime(get_runtime_paths(name))
+
+
+def test_factory_function_object_with_kwargs() -> None:
+    name = f"func-factory-{uuid.uuid4().hex}"
+    svc = local_singleton(name=name, factory=make_counter, factory_kwargs={"start": 5, "step": 3}, idle_ttl=1.0)
+
+    with svc.proxy() as p:
+        assert p.inc() == 8
+        assert p.inc() == 11
+
+    remove_runtime(get_runtime_paths(name))
+
+
+def test_factory_mismatch_args_raises_error() -> None:
+    name = f"factory-mismatch-{uuid.uuid4().hex}"
+    svc_one = local_singleton(name=name, factory=TestCounter, factory_args=(1,), idle_ttl=2.0)
+    svc_two = local_singleton(name=name, factory=TestCounter, factory_args=(2,), idle_ttl=2.0)
+
+    with svc_one.proxy() as p:
+        assert p.inc() == 2
+
+    with pytest.raises(FactoryMismatchError, match="Factory configuration mismatch"):
+        svc_two.ensure_started()
 
     remove_runtime(get_runtime_paths(name))

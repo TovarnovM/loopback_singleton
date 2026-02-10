@@ -20,12 +20,25 @@ from loopback_singleton.errors import (
     DaemonConnectionError,
     HandshakeError,
 )
-from loopback_singleton.runtime import ensure_auth_token, get_runtime_paths, read_runtime, remove_runtime
+from loopback_singleton.runtime import ensure_auth_token, get_runtime_paths, read_runtime, remove_runtime, write_factory_payload
 from loopback_singleton.serialization import get_serializer
 from loopback_singleton.transport import recv_message, send_message
 from loopback_singleton.version import PROTOCOL_VERSION
 
 FACTORY = "fixtures_pkg.services:TestCounter"
+
+def _prepare_factory_file(name: str) -> str:
+    paths = get_runtime_paths(name)
+    write_factory_payload(
+        paths,
+        {
+            "protocol_version": PROTOCOL_VERSION,
+            "factory_import": FACTORY,
+            "factory_args": (),
+            "factory_kwargs": {},
+        },
+    )
+    return str(paths.factory_file)
 
 
 def _wait_for_runtime(name: str, timeout: float = 5.0) -> dict:
@@ -73,8 +86,8 @@ def test_daemon_startup_grace_before_first_connection() -> None:
             "loopback_singleton.daemon",
             "--name",
             name,
-            "--factory",
-            FACTORY,
+            "--factory-file",
+            _prepare_factory_file(name),
             "--idle-ttl",
             "0.1",
             "--serializer",
@@ -126,8 +139,8 @@ def test_connect_once_raises_handshake_error_when_auth_token_changes() -> None:
             "loopback_singleton.daemon",
             "--name",
             name,
-            "--factory",
-            FACTORY,
+            "--factory-file",
+            _prepare_factory_file(name),
             "--idle-ttl",
             "1.0",
             "--serializer",
@@ -171,8 +184,8 @@ def test_handshake_rejects_protocol_version_mismatch() -> None:
             "loopback_singleton.daemon",
             "--name",
             name,
-            "--factory",
-            FACTORY,
+            "--factory-file",
+            _prepare_factory_file(name),
             "--idle-ttl",
             "1.0",
             "--serializer",

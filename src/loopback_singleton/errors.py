@@ -17,6 +17,10 @@ class HandshakeError(DaemonConnectionError):
     """Raised when protocol handshake fails."""
 
 
+class FactoryMismatchError(LoopbackSingletonError):
+    """Raised when client factory config differs from running daemon config."""
+
+
 class ProtocolError(LoopbackSingletonError):
     """Raised when wire protocol frames/messages are invalid."""
 
