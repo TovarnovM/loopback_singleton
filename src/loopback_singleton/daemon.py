@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import importlib
 import queue
+import select
 import socket
 import threading
 import time
@@ -28,6 +29,7 @@ class ExecItem:
 
 
 CLIENT_RECV_TIMEOUT = 0.5
+MAX_STALLED_PARTIAL_WINDOWS = 3
 
 
 def _resolve_factory(factory_import: str):
@@ -111,13 +113,29 @@ def run_daemon(name: str, factory: str, idle_ttl: float, serializer_name: str, s
 
     def handle_client(conn: socket.socket) -> None:
         nonlocal ever_connected
+
+        def _socket_may_have_buffered_data() -> bool:
+            try:
+                readable, _, _ = select.select([conn], [], [], 0)
+            except OSError:
+                return True
+            return bool(readable)
+
         mark_connected(+1)
         conn.settimeout(CLIENT_RECV_TIMEOUT)
         try:
+            stalled_partial_windows = 0
             while not shutting_down.is_set():
                 hello = recv_message_timeout(conn, serializer, CLIENT_RECV_TIMEOUT)
                 if hello is None:
+                    if _socket_may_have_buffered_data():
+                        stalled_partial_windows += 1
+                        if stalled_partial_windows >= MAX_STALLED_PARTIAL_WINDOWS:
+                            return
+                    else:
+                        stalled_partial_windows = 0
                     continue
+                stalled_partial_windows = 0
                 break
             else:
                 return
@@ -128,10 +146,18 @@ def run_daemon(name: str, factory: str, idle_ttl: float, serializer_name: str, s
             with active_lock:
                 ever_connected = True
             send_message(conn, ("OK", runtime_info["pid"], {"serializer": serializer_name}), serializer)
+            stalled_partial_windows = 0
             while not shutting_down.is_set():
                 msg = recv_message_timeout(conn, serializer, CLIENT_RECV_TIMEOUT)
                 if msg is None:
+                    if _socket_may_have_buffered_data():
+                        stalled_partial_windows += 1
+                        if stalled_partial_windows >= MAX_STALLED_PARTIAL_WINDOWS:
+                            return
+                    else:
+                        stalled_partial_windows = 0
                     continue
+                stalled_partial_windows = 0
                 kind = msg[0]
                 if kind == "PING":
                     with active_lock:

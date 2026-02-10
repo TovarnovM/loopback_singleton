@@ -228,6 +228,33 @@ def test_partial_frame_then_peer_close_does_not_block_idle_shutdown() -> None:
     assert not runtime_path.exists()
     remove_runtime(get_runtime_paths(name))
 
+
+def test_partial_frame_stall_is_disconnected_after_retries() -> None:
+    name = f"partial-stall-{uuid.uuid4().hex}"
+    svc = local_singleton(name=name, factory=FACTORY, idle_ttl=0.5)
+
+    svc.ensure_started()
+    runtime_path = get_runtime_paths(name).runtime_file
+    runtime = pickle.loads(runtime_path.read_bytes())
+    token = ensure_auth_token(get_runtime_paths(name))
+    serializer = get_serializer("pickle")
+
+    with socket.create_connection((runtime["host"], runtime["port"]), timeout=2.0) as sock:
+        send_message(sock, ("HELLO", PROTOCOL_VERSION, token), serializer)
+        assert recv_message(sock, serializer)[0] == "OK"
+
+        payload = serializer.dumps(("PING",))
+        frame = struct.pack("!I", len(payload)) + payload
+        sock.sendall(frame[:1])
+        time.sleep(2.0)
+
+    deadline = time.time() + 4.0
+    while time.time() < deadline and runtime_path.exists():
+        time.sleep(0.05)
+
+    assert not runtime_path.exists()
+    remove_runtime(get_runtime_paths(name))
+
 def test_private_method_call_denied_server_side() -> None:
     name = f"private-denied-{uuid.uuid4().hex}"
     svc = local_singleton(name=name, factory=FACTORY, idle_ttl=2.0)
