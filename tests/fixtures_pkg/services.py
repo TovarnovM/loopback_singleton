@@ -8,3 +8,6 @@ class TestCounter:
 
     def ping(self) -> str:
         return "pong"
+
+    def fail(self) -> None:
+        raise RuntimeError("boom")

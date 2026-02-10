@@ -5,10 +5,12 @@ import pickle
 import sys
 import time
 import uuid
+
+import pytest
 from multiprocessing import get_context
 from pathlib import Path
 
-from loopback_singleton import local_singleton
+from loopback_singleton import RemoteError, local_singleton
 from loopback_singleton.runtime import get_runtime_paths, remove_runtime
 
 TESTS_DIR = Path(__file__).parent
@@ -122,3 +124,19 @@ def test_stale_runtime_is_replaced() -> None:
     assert runtime["pid"] != 999999
 
     remove_runtime(paths)
+
+
+def test_remote_error_traceback_contains_runtime_error() -> None:
+    name = f"fail-{uuid.uuid4().hex}"
+    svc = local_singleton(name=name, factory=FACTORY, idle_ttl=1.0)
+
+    try:
+        with pytest.raises(RemoteError) as exc_info:
+            with svc.proxy() as p:
+                p.fail()
+
+        message = str(exc_info.value)
+        assert "RuntimeError" in message
+        assert "boom" in message
+    finally:
+        remove_runtime(get_runtime_paths(name))

@@ -109,6 +109,96 @@ def test_daemon_startup_grace_before_first_connection() -> None:
         remove_runtime(paths)
 
 
+def test_connect_once_raises_handshake_error_when_auth_token_changes() -> None:
+    name = f"bad-auth-{uuid.uuid4().hex}"
+    paths = get_runtime_paths(name)
+    ensure_auth_token(paths)
+    env = os.environ.copy()
+    test_path = str(Path(__file__).parent)
+    src_path = str(Path(__file__).parent.parent / "src")
+    env["PYTHONPATH"] = os.pathsep.join([src_path, test_path, env.get("PYTHONPATH", "")]).strip(os.pathsep)
+
+    proc = subprocess.Popen(
+        [
+            sys.executable,
+            "-m",
+            "loopback_singleton.daemon",
+            "--name",
+            name,
+            "--factory",
+            FACTORY,
+            "--idle-ttl",
+            "1.0",
+            "--serializer",
+            "pickle",
+            "--scope",
+            "user",
+        ],
+        env=env,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=(sys.platform != "win32"),
+        creationflags=(subprocess.CREATE_NEW_PROCESS_GROUP if sys.platform == "win32" else 0),
+    )
+    try:
+        _wait_for_runtime(name)
+        paths.auth_file.write_text("invalid-token", encoding="utf-8")
+
+        svc = LocalSingletonService(name=name, factory=FACTORY, idle_ttl=1.0)
+        with pytest.raises(HandshakeError):
+            svc._connect_once()
+    finally:
+        proc.terminate()
+        proc.wait(timeout=5)
+        remove_runtime(paths)
+
+
+def test_handshake_rejects_protocol_version_mismatch() -> None:
+    name = f"bad-proto-{uuid.uuid4().hex}"
+    paths = get_runtime_paths(name)
+    token = ensure_auth_token(paths)
+    env = os.environ.copy()
+    test_path = str(Path(__file__).parent)
+    src_path = str(Path(__file__).parent.parent / "src")
+    env["PYTHONPATH"] = os.pathsep.join([src_path, test_path, env.get("PYTHONPATH", "")]).strip(os.pathsep)
+
+    proc = subprocess.Popen(
+        [
+            sys.executable,
+            "-m",
+            "loopback_singleton.daemon",
+            "--name",
+            name,
+            "--factory",
+            FACTORY,
+            "--idle-ttl",
+            "1.0",
+            "--serializer",
+            "pickle",
+            "--scope",
+            "user",
+        ],
+        env=env,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=(sys.platform != "win32"),
+        creationflags=(subprocess.CREATE_NEW_PROCESS_GROUP if sys.platform == "win32" else 0),
+    )
+    try:
+        runtime = _wait_for_runtime(name)
+        serializer = get_serializer("pickle")
+        with socket.create_connection((runtime["host"], runtime["port"]), timeout=2.0) as sock:
+            send_message(sock, ("HELLO", PROTOCOL_VERSION + 999, token), serializer)
+            response = recv_message(sock, serializer)
+            assert response == ("ERR", "handshake failed")
+    finally:
+        proc.terminate()
+        proc.wait(timeout=5)
+        remove_runtime(paths)
+
+
 @pytest.mark.skipif(os.name == "nt", reason="POSIX-only permission behavior")
 def test_auth_token_runtime_dir_is_traversable(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
