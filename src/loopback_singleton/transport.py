@@ -14,6 +14,10 @@ from .serialization import PickleSerializer
 _LEN_STRUCT = struct.Struct("!I")
 MAX_FRAME_BYTES = 16 * 1024 * 1024
 
+_POLL_HUP_FLAGS = select.POLLHUP | select.POLLERR
+if hasattr(select, "POLLRDHUP"):
+    _POLL_HUP_FLAGS |= select.POLLRDHUP
+
 
 def _recv_exact(sock: socket.socket, n: int) -> bytes:
     chunks = bytearray()
@@ -69,6 +73,8 @@ def recv_message_timeout(
         if not raw_len:
             raise ConnectionError("Socket closed while receiving")
         if len(raw_len) < _LEN_STRUCT.size:
+            if _peer_disconnected(sock):
+                raise ConnectionError("Socket closed while receiving")
             continue
 
         (payload_len,) = _LEN_STRUCT.unpack(raw_len)
@@ -87,6 +93,14 @@ def recv_message_timeout(
         if not frame:
             raise ConnectionError("Socket closed while receiving")
         if len(frame) < frame_len:
+            if _peer_disconnected(sock):
+                raise ConnectionError("Socket closed while receiving")
             continue
 
         return recv_message(sock, serializer)
+
+
+def _peer_disconnected(sock: socket.socket) -> bool:
+    poller = select.poll()
+    poller.register(sock, _POLL_HUP_FLAGS)
+    return any(event & _POLL_HUP_FLAGS for _, event in poller.poll(0))
