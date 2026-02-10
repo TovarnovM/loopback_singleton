@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "loopback-singleton"
 version = "0.0.1"
-description = "TODO make descr"
+description = "Process-external local singleton via loopback daemon"
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
@@ -31,4 +31,7 @@ where = ["src"]
 [project.urls]
 Homepage = "https://github.com/TovarnovM/loopback_singleton"
 Repository = "https://github.com/TovarnovM/loopback_singleton"
-Issues = "https://github.com/TovarnovM/zen_fronts/loopback_singleton"
+Issues = "https://github.com/TovarnovM/loopback_singleton/issues"
+
+[tool.setuptools.package-data]
+loopback_singleton = ["py.typed"]
