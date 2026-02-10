@@ -15,7 +15,7 @@ from typing import Any
 from .errors import ProtocolError
 from .runtime import get_runtime_paths, remove_runtime, write_runtime
 from .serialization import get_serializer
-from .transport import recv_message, send_message
+from .transport import recv_message, recv_message_timeout, send_message
 from .version import PROTOCOL_VERSION
 
 
@@ -115,11 +115,10 @@ def run_daemon(name: str, factory: str, idle_ttl: float, serializer_name: str, s
         conn.settimeout(CLIENT_RECV_TIMEOUT)
         try:
             while not shutting_down.is_set():
-                try:
-                    hello = recv_message(conn, serializer)
-                    break
-                except socket.timeout:
+                hello = recv_message_timeout(conn, serializer, CLIENT_RECV_TIMEOUT)
+                if hello is None:
                     continue
+                break
             else:
                 return
 
@@ -130,9 +129,8 @@ def run_daemon(name: str, factory: str, idle_ttl: float, serializer_name: str, s
                 ever_connected = True
             send_message(conn, ("OK", runtime_info["pid"], {"serializer": serializer_name}), serializer)
             while not shutting_down.is_set():
-                try:
-                    msg = recv_message(conn, serializer)
-                except socket.timeout:
+                msg = recv_message_timeout(conn, serializer, CLIENT_RECV_TIMEOUT)
+                if msg is None:
                     continue
                 kind = msg[0]
                 if kind == "PING":

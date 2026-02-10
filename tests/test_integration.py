@@ -245,3 +245,30 @@ def test_service_ensure_started_ping_shutdown_lifecycle() -> None:
     second_info = svc.ping()
     assert second_info["pid"] != first_pid
     remove_runtime(get_runtime_paths(name))
+
+
+def test_chunked_ping_frame_survives_recv_timeout_window() -> None:
+    name = f"chunked-ping-{uuid.uuid4().hex}"
+    svc = local_singleton(name=name, factory=FACTORY, idle_ttl=2.0)
+
+    svc.ensure_started()
+    runtime = pickle.loads(get_runtime_paths(name).runtime_file.read_bytes())
+    token = ensure_auth_token(get_runtime_paths(name))
+    serializer = get_serializer("pickle")
+
+    with socket.create_connection((runtime["host"], runtime["port"]), timeout=2.0) as sock:
+        send_message(sock, ("HELLO", PROTOCOL_VERSION, token), serializer)
+        assert recv_message(sock, serializer)[0] == "OK"
+
+        payload = serializer.dumps(("PING",))
+        frame = struct.pack("!I", len(payload)) + payload
+        split_at = len(frame) // 2
+        sock.sendall(frame[:split_at])
+        time.sleep(0.7)
+        sock.sendall(frame[split_at:])
+
+        status, payload = recv_message(sock, serializer)
+        assert status == "OK"
+        assert payload["pid"] == runtime["pid"]
+
+    remove_runtime(get_runtime_paths(name))
