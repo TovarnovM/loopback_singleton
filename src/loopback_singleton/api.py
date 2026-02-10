@@ -107,9 +107,47 @@ class LocalSingletonService:
                 raise DaemonConnectionError("Failed to start/connect daemon: no error details")
             raise DaemonConnectionError(f"Failed to start/connect daemon: {last_exc}") from last_exc
 
+    def ensure_started(self) -> None:
+        sock = self._connect_or_spawn()
+        sock.close()
+
+    def ping(self) -> dict[str, Any]:
+        serializer = get_serializer(self.serializer)
+        sock = self._connect_or_spawn()
+        try:
+            send_message(sock, ("PING",), serializer)
+            resp = recv_message(sock, serializer)
+        finally:
+            sock.close()
+        if resp[0] != "OK" or not isinstance(resp[1], dict):
+            raise DaemonConnectionError(f"Bad ping response: {resp!r}")
+        return resp[1]
+
+    def shutdown(self, force: bool = False) -> None:
+        serializer = get_serializer(self.serializer)
+        try:
+            sock = self._connect_once()
+        except DaemonConnectionError:
+            return
+        try:
+            send_message(sock, ("SHUTDOWN", force), serializer)
+            resp = recv_message(sock, serializer)
+        finally:
+            sock.close()
+        if resp[0] != "OK":
+            raise DaemonConnectionError(f"Bad shutdown response: {resp!r}")
+
+        paths = get_runtime_paths(name=self.name, scope=self.scope)
+        deadline = time.time() + max(self.start_timeout, 0.2)
+        while time.time() < deadline:
+            if read_runtime(paths) is None:
+                return
+            time.sleep(0.05)
+        remove_runtime(paths)
+
     def proxy(self) -> Proxy:
         sock = self._connect_or_spawn()
-        return Proxy(sock=sock, serializer_name=self.serializer)
+        return Proxy(sock=sock, serializer_name=self.serializer, service_name=self.name)
 
 
 def local_singleton(

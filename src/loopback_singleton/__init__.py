@@ -4,6 +4,7 @@ from .errors import (
     DaemonConnectionError,
     HandshakeError,
     LoopbackSingletonError,
+    ProtocolError,
     RemoteError,
 )
 
@@ -11,6 +12,7 @@ __all__ = [
     "local_singleton",
     "LocalSingletonService",
     "LoopbackSingletonError",
+    "ProtocolError",
     "DaemonConnectionError",
     "ConnectionFailedError",
     "HandshakeError",

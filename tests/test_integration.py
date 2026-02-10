@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import os
 import pickle
+import socket
+import struct
 import sys
 import time
 import uuid
@@ -11,7 +13,10 @@ from multiprocessing import get_context
 from pathlib import Path
 
 from loopback_singleton import RemoteError, local_singleton
-from loopback_singleton.runtime import get_runtime_paths, remove_runtime
+from loopback_singleton.runtime import ensure_auth_token, get_runtime_paths, remove_runtime
+from loopback_singleton.serialization import get_serializer
+from loopback_singleton.transport import MAX_FRAME_BYTES, recv_message, send_message
+from loopback_singleton.version import PROTOCOL_VERSION
 
 TESTS_DIR = Path(__file__).parent
 os.environ["PYTHONPATH"] = (
@@ -140,3 +145,103 @@ def test_remote_error_traceback_contains_runtime_error() -> None:
         assert "boom" in message
     finally:
         remove_runtime(get_runtime_paths(name))
+
+
+def test_oversized_frame_rejected_and_daemon_stays_healthy() -> None:
+    name = f"frame-limit-{uuid.uuid4().hex}"
+    svc = local_singleton(name=name, factory=FACTORY, idle_ttl=2.0)
+
+    svc.ensure_started()
+    runtime = pickle.loads(get_runtime_paths(name).runtime_file.read_bytes())
+    token = ensure_auth_token(get_runtime_paths(name))
+    serializer = get_serializer("pickle")
+
+    with socket.create_connection((runtime["host"], runtime["port"]), timeout=2.0) as sock:
+        send_message(sock, ("HELLO", PROTOCOL_VERSION, token), serializer)
+        assert recv_message(sock, serializer)[0] == "OK"
+
+        sock.sendall(struct.pack("!I", MAX_FRAME_BYTES + 1))
+        deadline = time.time() + 2.0
+        while time.time() < deadline:
+            try:
+                probe = sock.recv(1)
+            except (ConnectionResetError, OSError):
+                break
+            if probe == b"":
+                break
+        else:
+            raise AssertionError("daemon did not close oversized-frame connection")
+
+    info = svc.ping()
+    assert info["pid"] == runtime["pid"]
+    remove_runtime(get_runtime_paths(name))
+
+
+def test_idle_shutdown_with_stuck_client_connection() -> None:
+    name = f"stuck-client-{uuid.uuid4().hex}"
+    svc = local_singleton(name=name, factory=FACTORY, idle_ttl=0.5)
+
+    svc.ensure_started()
+    runtime_path = get_runtime_paths(name).runtime_file
+    first_runtime = pickle.loads(runtime_path.read_bytes())
+    token = ensure_auth_token(get_runtime_paths(name))
+    serializer = get_serializer("pickle")
+
+    sock = socket.create_connection((first_runtime["host"], first_runtime["port"]), timeout=2.0)
+    send_message(sock, ("HELLO", PROTOCOL_VERSION, token), serializer)
+    assert recv_message(sock, serializer)[0] == "OK"
+
+    time.sleep(0.8)
+    assert runtime_path.exists()
+
+    sock.close()
+
+    deadline = time.time() + 4.0
+    while time.time() < deadline and runtime_path.exists():
+        time.sleep(0.05)
+    assert not runtime_path.exists()
+    remove_runtime(get_runtime_paths(name))
+
+
+def test_private_method_call_denied_server_side() -> None:
+    name = f"private-denied-{uuid.uuid4().hex}"
+    svc = local_singleton(name=name, factory=FACTORY, idle_ttl=2.0)
+
+    svc.ensure_started()
+    runtime = pickle.loads(get_runtime_paths(name).runtime_file.read_bytes())
+    token = ensure_auth_token(get_runtime_paths(name))
+    serializer = get_serializer("pickle")
+
+    with socket.create_connection((runtime["host"], runtime["port"]), timeout=2.0) as sock:
+        send_message(sock, ("HELLO", PROTOCOL_VERSION, token), serializer)
+        assert recv_message(sock, serializer)[0] == "OK"
+
+        send_message(sock, ("CALL", "_reset_state", (), {}), serializer)
+        status, payload = recv_message(sock, serializer)
+        assert status == "ERR"
+        assert "private methods are not allowed" in payload
+
+    remove_runtime(get_runtime_paths(name))
+
+
+def test_service_ensure_started_ping_shutdown_lifecycle() -> None:
+    name = f"service-api-{uuid.uuid4().hex}"
+    svc = local_singleton(name=name, factory=FACTORY, idle_ttl=2.0)
+
+    svc.ensure_started()
+    first_info = svc.ping()
+    assert isinstance(first_info["pid"], int)
+    assert isinstance(first_info["active"], int)
+
+    first_pid = first_info["pid"]
+    svc.shutdown()
+
+    runtime_path = get_runtime_paths(name).runtime_file
+    deadline = time.time() + 4.0
+    while time.time() < deadline and runtime_path.exists():
+        time.sleep(0.05)
+    assert not runtime_path.exists()
+
+    second_info = svc.ping()
+    assert second_info["pid"] != first_pid
+    remove_runtime(get_runtime_paths(name))

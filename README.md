@@ -89,6 +89,14 @@ local_singleton(
 
 `svc.proxy()` returns a dynamic proxy where method calls are forwarded to the daemon.
 
+Additional lifecycle APIs are available on `LocalSingletonService`:
+
+```python
+svc.ensure_started()
+info = svc.ping()
+svc.shutdown()
+```
+
 ## How it works
 
 1. Client computes runtime paths for the singleton name.
@@ -96,6 +104,52 @@ local_singleton(
 3. If missing/failing, it takes a file lock, cleans stale metadata, and spawns daemon.
 4. Daemon binds ephemeral loopback TCP port, writes runtime metadata, and serves requests.
 5. Each `CALL` request is executed sequentially against one in-memory object instance.
+
+
+### Lifecycle and robustness scenarios
+
+#### Scenario A — Oversized payload fails fast, daemon remains healthy
+
+```python
+svc = local_singleton("svc", factory="mypkg.m:MyObj")
+with svc.proxy() as p:
+    p.process_bytes(b"x" * (100 * 1024 * 1024))  # 100MB
+```
+
+Large frames are capped (16 MiB by default). Oversized frames are rejected with a clear protocol/connection error, and the daemon keeps serving other clients.
+
+#### Scenario B — Idle shutdown survives stuck clients
+
+Daemon client handlers use bounded socket read timeouts, so an idle/stuck TCP client cannot block daemon shutdown forever.
+
+#### Scenario C — Private methods are denied by daemon
+
+```python
+svc = local_singleton("svc", factory="mypkg.m:MyObj")
+with svc.proxy() as p:
+    p._reset_state()
+```
+
+Even if a client bypasses proxy-side checks, daemon-side policy rejects `CALL` for methods starting with `_`.
+
+#### Scenario D — Warm-up without creating a proxy
+
+```python
+svc = local_singleton("svc", factory="mypkg.m:MyObj")
+svc.ensure_started()
+```
+
+This starts (or verifies) the daemon and completes handshake without creating a `Proxy`.
+
+#### Scenario E — Health check and deterministic shutdown
+
+```python
+svc = local_singleton("svc", factory="mypkg.m:MyObj")
+info = svc.ping()
+svc.shutdown()
+```
+
+`ping()` returns daemon metadata (`pid`, `active`, and protocol/runtime info). `shutdown()` requests daemon exit and cleans runtime metadata.
 
 ## Error model
 
@@ -105,6 +159,7 @@ Main exception classes exported by the package:
 - `DaemonConnectionError`
   - `ConnectionFailedError`
   - `HandshakeError`
+- `ProtocolError` (invalid or oversized transport frames/messages)
 - `RemoteError` (remote traceback payload)
 
 ## Security notes (important)

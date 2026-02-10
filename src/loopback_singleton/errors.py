@@ -17,5 +17,9 @@ class HandshakeError(DaemonConnectionError):
     """Raised when protocol handshake fails."""
 
 
+class ProtocolError(LoopbackSingletonError):
+    """Raised when wire protocol frames/messages are invalid."""
+
+
 class RemoteError(LoopbackSingletonError):
     """Raised when the remote daemon reports an execution error."""

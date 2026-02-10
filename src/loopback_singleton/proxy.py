@@ -13,8 +13,10 @@ from .transport import recv_message, send_message
 
 
 class Proxy:
-    def __init__(self, sock: socket.socket, serializer_name: str):
+    def __init__(self, sock: socket.socket, serializer_name: str, service_name: str | None = None):
         self._sock = sock
+        self._serializer_name = serializer_name
+        self._service_name = service_name
         self._serializer = get_serializer(serializer_name)
         self._closed = False
         self._io_lock = threading.Lock()
@@ -41,6 +43,11 @@ class Proxy:
 
     def __del__(self) -> None:
         self.close()
+
+    def __repr__(self) -> str:
+        state = "closed" if self._closed else "open"
+        service = self._service_name if self._service_name is not None else "<unknown>"
+        return f"Proxy(service={service!r}, serializer={self._serializer_name!r}, state={state})"
 
     def _call(self, method_name: str, *args: Any, **kwargs: Any) -> Any:
         if self._closed:

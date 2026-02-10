@@ -12,6 +12,7 @@ import traceback
 from dataclasses import dataclass
 from typing import Any
 
+from .errors import ProtocolError
 from .runtime import get_runtime_paths, remove_runtime, write_runtime
 from .serialization import get_serializer
 from .transport import recv_message, send_message
@@ -24,6 +25,9 @@ class ExecItem:
     args: tuple[Any, ...]
     kwargs: dict[str, Any]
     result_q: queue.Queue[tuple[str, Any]]
+
+
+CLIENT_RECV_TIMEOUT = 0.5
 
 
 def _resolve_factory(factory_import: str):
@@ -108,8 +112,17 @@ def run_daemon(name: str, factory: str, idle_ttl: float, serializer_name: str, s
     def handle_client(conn: socket.socket) -> None:
         nonlocal ever_connected
         mark_connected(+1)
+        conn.settimeout(CLIENT_RECV_TIMEOUT)
         try:
-            hello = recv_message(conn, serializer)
+            while not shutting_down.is_set():
+                try:
+                    hello = recv_message(conn, serializer)
+                    break
+                except socket.timeout:
+                    continue
+            else:
+                return
+
             if hello[0] != "HELLO" or hello[1] != PROTOCOL_VERSION or hello[2] != auth_token:
                 send_message(conn, ("ERR", "handshake failed"), serializer)
                 return
@@ -117,26 +130,48 @@ def run_daemon(name: str, factory: str, idle_ttl: float, serializer_name: str, s
                 ever_connected = True
             send_message(conn, ("OK", runtime_info["pid"], {"serializer": serializer_name}), serializer)
             while not shutting_down.is_set():
-                msg = recv_message(conn, serializer)
+                try:
+                    msg = recv_message(conn, serializer)
+                except socket.timeout:
+                    continue
                 kind = msg[0]
                 if kind == "PING":
                     with active_lock:
                         active_count = active_connections
-                    send_message(conn, ("OK", {"pid": runtime_info["pid"], "active": active_count}), serializer)
+                    send_message(
+                        conn,
+                        (
+                            "OK",
+                            {
+                                "pid": runtime_info["pid"],
+                                "active": active_count,
+                                "started_at": runtime_info["started_at"],
+                                "serializer": serializer_name,
+                                "protocol_version": PROTOCOL_VERSION,
+                            },
+                        ),
+                        serializer,
+                    )
                     continue
                 if kind == "CALL":
                     _, method_name, args, kwargs = msg
+                    if method_name.startswith("_"):
+                        send_message(conn, ("ERR", "private methods are not allowed"), serializer)
+                        continue
                     result_q: queue.Queue[tuple[str, Any]] = queue.Queue(maxsize=1)
                     exec_q.put(ExecItem(method_name=method_name, args=args, kwargs=kwargs, result_q=result_q))
                     status, payload = result_q.get()
                     send_message(conn, (status, payload), serializer)
                     continue
                 if kind == "SHUTDOWN":
+                    force = False
+                    if len(msg) > 1:
+                        force = bool(msg[1])
                     shutting_down.set()
-                    send_message(conn, ("OK", {"shutdown": True}), serializer)
+                    send_message(conn, ("OK", {"shutdown": True, "force": force}), serializer)
                     return
                 send_message(conn, ("ERR", f"unknown message type: {kind}"), serializer)
-        except (ConnectionError, OSError):
+        except (ProtocolError, ConnectionError, OSError):
             return
         finally:
             mark_connected(-1)
