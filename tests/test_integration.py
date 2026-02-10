@@ -203,6 +203,58 @@ def test_idle_shutdown_with_stuck_client_connection() -> None:
     remove_runtime(get_runtime_paths(name))
 
 
+def test_partial_frame_then_peer_close_does_not_block_idle_shutdown() -> None:
+    name = f"partial-close-{uuid.uuid4().hex}"
+    svc = local_singleton(name=name, factory=FACTORY, idle_ttl=0.5)
+
+    svc.ensure_started()
+    runtime_path = get_runtime_paths(name).runtime_file
+    runtime = pickle.loads(runtime_path.read_bytes())
+    token = ensure_auth_token(get_runtime_paths(name))
+    serializer = get_serializer("pickle")
+
+    with socket.create_connection((runtime["host"], runtime["port"]), timeout=2.0) as sock:
+        send_message(sock, ("HELLO", PROTOCOL_VERSION, token), serializer)
+        assert recv_message(sock, serializer)[0] == "OK"
+
+        payload = serializer.dumps(("PING",))
+        frame = struct.pack("!I", len(payload)) + payload
+        sock.sendall(frame[:1])
+
+    deadline = time.time() + 4.0
+    while time.time() < deadline and runtime_path.exists():
+        time.sleep(0.05)
+
+    assert not runtime_path.exists()
+    remove_runtime(get_runtime_paths(name))
+
+
+def test_partial_frame_stall_is_disconnected_after_retries() -> None:
+    name = f"partial-stall-{uuid.uuid4().hex}"
+    svc = local_singleton(name=name, factory=FACTORY, idle_ttl=0.5)
+
+    svc.ensure_started()
+    runtime_path = get_runtime_paths(name).runtime_file
+    runtime = pickle.loads(runtime_path.read_bytes())
+    token = ensure_auth_token(get_runtime_paths(name))
+    serializer = get_serializer("pickle")
+
+    with socket.create_connection((runtime["host"], runtime["port"]), timeout=2.0) as sock:
+        send_message(sock, ("HELLO", PROTOCOL_VERSION, token), serializer)
+        assert recv_message(sock, serializer)[0] == "OK"
+
+        payload = serializer.dumps(("PING",))
+        frame = struct.pack("!I", len(payload)) + payload
+        sock.sendall(frame[:1])
+        time.sleep(2.0)
+
+    deadline = time.time() + 4.0
+    while time.time() < deadline and runtime_path.exists():
+        time.sleep(0.05)
+
+    assert not runtime_path.exists()
+    remove_runtime(get_runtime_paths(name))
+
 def test_private_method_call_denied_server_side() -> None:
     name = f"private-denied-{uuid.uuid4().hex}"
     svc = local_singleton(name=name, factory=FACTORY, idle_ttl=2.0)
@@ -244,4 +296,31 @@ def test_service_ensure_started_ping_shutdown_lifecycle() -> None:
 
     second_info = svc.ping()
     assert second_info["pid"] != first_pid
+    remove_runtime(get_runtime_paths(name))
+
+
+def test_chunked_ping_frame_survives_recv_timeout_window() -> None:
+    name = f"chunked-ping-{uuid.uuid4().hex}"
+    svc = local_singleton(name=name, factory=FACTORY, idle_ttl=2.0)
+
+    svc.ensure_started()
+    runtime = pickle.loads(get_runtime_paths(name).runtime_file.read_bytes())
+    token = ensure_auth_token(get_runtime_paths(name))
+    serializer = get_serializer("pickle")
+
+    with socket.create_connection((runtime["host"], runtime["port"]), timeout=2.0) as sock:
+        send_message(sock, ("HELLO", PROTOCOL_VERSION, token), serializer)
+        assert recv_message(sock, serializer)[0] == "OK"
+
+        payload = serializer.dumps(("PING",))
+        frame = struct.pack("!I", len(payload)) + payload
+        split_at = len(frame) // 2
+        sock.sendall(frame[:split_at])
+        time.sleep(0.7)
+        sock.sendall(frame[split_at:])
+
+        status, payload = recv_message(sock, serializer)
+        assert status == "OK"
+        assert payload["pid"] == runtime["pid"]
+
     remove_runtime(get_runtime_paths(name))
