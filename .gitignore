@@ -1,0 +1,13 @@
+.venv
+*owrf1d.egg-info
+*__pycache__
+*.so
+*.pytest_cache
+*.vscode
+*.patch
+*.html
+*.c
+*.cpp
+build/
+dist/
+*.egg-info/

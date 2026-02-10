@@ -1,0 +1,34 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "loopback-singleton"
+version = "0.0.1"
+description = "TODO make descr"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+requires-python = ">=3.10"
+# dependencies = ["numpy>=1.23", "owrf1d>=1.0.4"]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=7.0",
+  "hypothesis>=6.100",
+  "ruff>=0.4",
+  "build",
+  "twine",
+  "setuptools",
+]
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[project.urls]
+Homepage = "https://github.com/TovarnovM/loopback_singleton"
+Repository = "https://github.com/TovarnovM/loopback_singleton"
+Issues = "https://github.com/TovarnovM/zen_fronts/loopback_singleton"

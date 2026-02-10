@@ -1,0 +1,29 @@
+# --- Core metadata ---
+include pyproject.toml
+include README.md
+include LICENSE
+include MANIFEST.in
+
+# --- Package sources (src-layout) ---
+recursive-include src/loopback_singleton *.py
+recursive-include src/loopback_singleton *.pyx *.pxd
+recursive-include src/loopback_singleton *.c *.h
+recursive-include src/loopback_singleton py.typed
+
+# --- Examples / tests (optional but useful for sdist) ---
+recursive-include examples *.py
+recursive-include tests *.py
+
+# --- Docs assets (used by README / docs) ---
+recursive-include docs *.png *.jpg *.jpeg *.svg *.gif
+
+# --- Hygiene ---
+global-exclude *.py[cod]
+global-exclude __pycache__
+global-exclude .DS_Store
+
+prune .venv
+prune build
+prune dist
+prune *.egg-info
+prune .pytest_cache
