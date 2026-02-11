@@ -4,9 +4,9 @@
 
 It is useful when you want one process-external object (cache, counter, coordinator, adapter, etc.) and you want all local workers to call into that object without standing up a full RPC system.
 
-## Current status (v0.2.2)
+## Current status (v0.2.3)
 
-Current release: `0.2.2`.
+Current release: `0.2.3`.
 
 ### What works today
 
