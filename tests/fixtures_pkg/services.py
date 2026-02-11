@@ -1,5 +1,6 @@
 class TestCounter:
     __test__ = False
+
     def __init__(self, start: int = 0, step: int = 1) -> None:
         self._value = start
         self._step = step
@@ -17,3 +18,14 @@ class TestCounter:
 
 def make_counter(start: int = 0, step: int = 1) -> TestCounter:
     return TestCounter(start=start, step=step)
+
+
+class DaemonSmokeService:
+    __test__ = False
+
+    def ping(self) -> str:
+        return "smoke"
+
+
+def make_daemon_smoke_service() -> DaemonSmokeService:
+    return DaemonSmokeService()
