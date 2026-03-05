@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import errno
 import os
 import pickle
 import socket
@@ -38,6 +39,25 @@ def _worker_ping(name: str, queue) -> None:
     queue.put((result, runtime["pid"]))
 
 
+def _worker_ping_synchronized(name: str, barrier, queue) -> None:
+    svc = local_singleton(name=name, factory=FACTORY, idle_ttl=1.5)
+    barrier.wait()
+
+    attempts = 5
+    for i in range(attempts):
+        try:
+            with svc.proxy() as p:
+                result = p.ping()
+            break
+        except OSError as exc:
+            if exc.errno != errno.EDEADLOCK or i == attempts - 1:
+                raise
+            time.sleep(0.05)
+
+    runtime = pickle.loads(get_runtime_paths(name).runtime_file.read_bytes())
+    queue.put((result, runtime["pid"]))
+
+
 def _worker_inc(name: str, n: int, queue) -> None:
     svc = local_singleton(name=name, factory=FACTORY, idle_ttl=2.0)
     vals = []
@@ -62,6 +82,29 @@ def test_race_start_multi_process() -> None:
     assert all(item[0] == "pong" for item in results)
     pids = {item[1] for item in results}
     assert len(pids) == 1
+
+
+def test_race_start_multi_process_synchronized() -> None:
+    name = f"race-sync-{uuid.uuid4().hex}"
+    ctx = get_context("spawn")
+    workers = 24
+    barrier = ctx.Barrier(workers)
+    q = ctx.Queue()
+    procs = [ctx.Process(target=_worker_ping_synchronized, args=(name, barrier, q)) for _ in range(workers)]
+
+    try:
+        for p in procs:
+            p.start()
+        for p in procs:
+            p.join(timeout=30)
+            assert p.exitcode == 0
+
+        results = [q.get(timeout=10) for _ in procs]
+        assert all(item[0] == "pong" for item in results)
+        pids = {item[1] for item in results}
+        assert len(pids) == 1
+    finally:
+        remove_runtime(get_runtime_paths(name))
 
 
 def test_strict_sequential_counter() -> None:
