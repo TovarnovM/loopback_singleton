@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import errno
 import os
 import pickle
 import socket
@@ -41,8 +42,18 @@ def _worker_ping(name: str, queue) -> None:
 def _worker_ping_synchronized(name: str, barrier, queue) -> None:
     svc = local_singleton(name=name, factory=FACTORY, idle_ttl=1.5)
     barrier.wait()
-    with svc.proxy() as p:
-        result = p.ping()
+
+    attempts = 5
+    for i in range(attempts):
+        try:
+            with svc.proxy() as p:
+                result = p.ping()
+            break
+        except OSError as exc:
+            if exc.errno != errno.EDEADLOCK or i == attempts - 1:
+                raise
+            time.sleep(0.05)
+
     runtime = pickle.loads(get_runtime_paths(name).runtime_file.read_bytes())
     queue.put((result, runtime["pid"]))
 
